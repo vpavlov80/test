@@ -1,0 +1,425 @@
+<?php
+	
+	require_once( 'autoload.inc' );
+
+	define( "RESET_BOX", "SevOne-dev data-gen reset-box" );
+	define( "DISABLE_PROCESS", "initedit --disable" );
+	define( "ENABLE_PROCESS", "initedit --enable" );
+	define( "FCADD", "fcad" );
+	define( "DISPATCHD", "dispatchd" );
+	define( "INSERTD", "insertd" );
+	define( "INSERT_BACKFILLD", "insert-backfilld" );
+
+	if ( $argv[1] == null ) {
+		echo( "Please give spk filename" );
+		return -1;
+	}
+
+	if ( $argv[2] == null ) {
+	        echo( "Please specify testing type NORMAL or DELAY" );
+	        return -1;
+	}
+
+	if ( $argv[3] == null ) {
+	        echo( "Please specify Number of files to be generated" );
+	        return -1;
+	}
+
+	echo " Diable all the process \n";
+
+	function disableProcess ( $command ) {
+		exec( $command );
+	}
+
+	function enableProcess ( $command ) {
+		$PID = exec( $command . ' > /dev/null 2>&1 & echo $! ' );
+		return $PID;
+	}
+ 
+	function clearDirectories ( $dir ) {
+		shell_exec("rm -rf $dir");	
+	}
+	
+	//RESET THE BOX BEFORE TEST
+	exec( RESET_BOX );
+
+	//Disable all the process 
+	disableProcess( DISABLE_PROCESS ." ". FCADD );
+	disableProcess( DISABLE_PROCESS ." ". INSERTD );
+	disableProcess( DISABLE_PROCESS ." ". DISPATCHD );
+	disableProcess( DISABLE_PROCESS ." ". INSERT_BACKFILLD );
+
+	//cleanup all the directories to remove any already exisiting file
+	clearDirectories( "/var/SevOne/bulkd/fcad/*" );
+	clearDirectories( "/var/SevOne/bulkd/dispatch/*" );
+	clearDirectories( "/var/SevOne/bulkd/backfillprocess/*" );
+	clearDirectories( "/var/SevOne/bulkd/process/*" );
+
+	//Enable all the process again
+
+	echo " Enable FCAD \n";
+	$PID_Fcad = enableProcess( ENABLE_PROCESS ." ". FCADD );
+	if ( count( $PID_Fcad ) < 1 ) {
+		echo( " Not able to run Fcad " );
+		return -1;
+	}
+
+	sleep(2);
+
+	echo " Enable DISPATCHD \n";
+	$PID_Dispatchd = enableProcess( ENABLE_PROCESS ." ". DISPATCHD );
+	if ( count( $PID_Dispatchd ) < 1 ) {
+		echo( " Not able to run Dispatchd " );
+                return -1;
+  	}
+	
+	sleep(2);
+
+	echo " Enable INSERTD \n";
+	$PID_Insertd = enableProcess( ENABLE_PROCESS ." ". INSERTD );
+	if ( count( $PID_Insertd ) < 1 ) {
+  		echo( " Not able to run InsertD " );
+    		return -1;
+  	}
+	
+	
+	sleep(2);
+
+	echo " Enable Backfilld \n";
+	$PID_InsBack = enableProcess( ENABLE_PROCESS ." ". INSERT_BACKFILLD );
+	if ( count( $PID_InsBack ) < 1 ) {
+    		echo( " Not able to run Insert Backfilld " );
+    		return -1;
+  	}
+
+	//TO DO Run adapater
+	//Make Sure Parser is installed first
+	sleep(5);	
+	$pollingStartTime = time();
+	
+	echo " Import SPK $argv[1] \n";
+	exec( "SevOne-import -v --file /opt/$argv[1] --skip-state-check" );
+
+	switch( $argv[2] ){
+	
+		case "FIXEDCSV":
+			canaryTest( $argv[3] );
+			break;
+
+		case "DELAY":
+			canaryDelayTest( $argv[3] );
+			break;
+
+		case "NOFILE":
+			canaryNoFileTest( $argv[3] );
+			break;
+
+		case "RAMBACKED":
+			ramBackedTest( $argv[3] );
+			break;
+
+		default:
+			echo "Plase specify the type of testing NORMAL or DELAY";
+	
+	
+	}
+
+
+	function canaryTest ( $numFile ){
+
+			echo " In $argv[1] testing for xStats \n";
+			echo " Generating files \n ";
+		 $PID = shell_exec( "/opt/genfile.sh FIXEDCSV $numFile" );
+
+		 $table_name = array();
+
+		 //Get found_dvice_id for bulkdata_objects_found from buldata_devices_found->id
+		 
+		 sleep(10);
+		 
+		 $link = Database::connectLocal();
+		 $query = "SELECT id FROM net.deviceinfo;";
+		 $deviceRecords = $link->query($query);
+		 
+		 if ( count( $deviceRecords ) == 0 ) {
+		 	echo "Error in Getting Devices";
+		  return -1;
+		 }
+		 
+
+		while ( $row = $deviceRecords->fetchObject() ) {
+			$deviceId = $row->id;
+			
+			sleep(30);
+			
+			$objectRecords = $link->query( "SELECT * FROM local.device_object WHERE device_id = $deviceId" );
+
+			if ( count( $objectRecords ) == 0 ) {
+	                	echo "Error in Getting Objects";
+	                	return -1;
+	        	}
+
+			while ( $row = $objectRecords->fetchObject() ) {
+                		$objectId = $row->id;
+				$table_name = $row->table_name;
+
+				$query = "SELECT *  FROM local.device_indicator where object_id = $objectId";
+				$indicatorRecords = $link->query($query);
+			
+				if ( count( $indicatorRecords ) == 0 ) {
+					echo "Error in Getting Indicators";
+			        	return -1;
+				}
+
+					while ( $row = $indicatorRecords->fetchObject() ) {
+						$indId = $row->id;
+						$valcnt = 0;
+						for ( $count = 0; $count < 25; $count++ ) {
+							$shortTerm = $link->query("SELECT count(*) AS Count FROM pluginshortterm.shortterm$count WHERE indicator_id = $indId ");
+							$row = $shortTerm->fetchObject();
+							$valcnt += intval($row->Count);
+							$pluginCntForInd["$indId"] = $valcnt;
+						}
+
+						if ( $pluginCntForInd["$indId"] == 0 ) {
+							echo( "NO plugin in shortterm for $indId\n" );
+							return -1;
+						}
+						else {
+							$successFlag = 1;
+						}
+					}
+        		}
+	
+		}
+
+		if ($successFlag == 1 ) {
+			echo "Everything is perfect\n";
+		}
+		else {
+			echo "Xstats is broken\n";
+		}
+	}
+
+	function canaryDelayTest( $numFile ){
+
+			echo " In DELAY testing for xStats \n";
+			echo " Generating files \n ";
+			$successFlag = -1;
+		 $PID = shell_exec( "/opt/genfile.sh DELAY $numFile" );
+
+     $table_name = array();
+
+     //Get found_dvice_id for bulkdata_objects_found from buldata_devices_found->id
+     sleep(10);
+     $link = Database::connectLocal();
+     $query = "SELECT id FROM net.deviceinfo;";
+		 $deviceRecords = $link->query($query);
+
+     if ( count( $deviceRecords ) == 0 ) {
+	   		echo "Error in Getting Devices\n";
+		         return -1;
+	         }
+	
+		  while ( $row = $deviceRecords->fetchObject() ) {
+			  $deviceId = $row->id;
+				echo "Device Id is $deviceId\n";
+				
+				sleep(120);
+
+				$PID = shell_exec( "/opt/genfile.sh DELAY $numFile" );
+				sleep(60);
+
+			  $objectRecords = $link->query( "SELECT * FROM local.device_object WHERE device_id = $deviceId" );
+
+			  if ( count( $objectRecords ) == 0 ) {
+			  	echo "Error in Getting Objects\n";
+				return -1;
+			  }
+
+			  while ( $row = $objectRecords->fetchObject() ) {
+			  	$objectId = $row->id;
+					$table_name = $row->table_name;
+					echo "table name is $table_name\n";
+					$longtermRecords = $link->query( "SELECT count(*) AS Count FROM pluginlongterm.$table_name" );
+					$row = $longtermRecords->fetchObject();
+					$value = intval( $row->Count );
+					echo "count value is $value for $table_name\n";
+					if( $value == 0 ){
+						echo( "No record in Pluginlongterm table $table_name" );
+						$successFlag = -1;
+						return -1;
+					}
+					else{
+			  		$successFlag = 1;
+					}
+			  }
+		  }
+
+		   if ($successFlag == 1 ) {
+		   	echo "Everything is perfect\n";
+				return 0;
+		   }
+		   else {
+			echo "Xstats is broken\n";
+			return -1;
+		   }
+
+	}
+
+	function canaryNoFileTest ( $numFile ){
+
+			echo " In NoFile testing for xStats \n";
+			echo " Generating files \n ";
+		 $PID = shell_exec( "/opt/genfile.sh NOFILE $numFile" );
+
+		 //Get found_dvice_id for bulkdata_objects_found from buldata_devices_found->id
+		 
+		 sleep(10);
+		 
+		 $link = Database::connectLocal();
+		 $query = "SELECT id FROM net.deviceinfo;";
+		 $deviceRecords = $link->query($query);
+		 
+		 if ( count( $deviceRecords ) == 0 ) {
+		 	echo "Error in Getting Devices";
+		  return -1;
+		 }
+		 
+
+		while ( $row = $deviceRecords->fetchObject() ) {
+			$deviceId = $row->id;
+			
+			$objectRecords = $link->query( "SELECT * FROM local.device_object WHERE device_id = $deviceId" );
+
+			if ( count( $objectRecords ) == 0 ) {
+	                	echo "Error in Getting Objects";
+	                	return -1;
+	        	}
+
+			while ( $row = $objectRecords->fetchObject() ) {
+                		$objectId = $row->id;
+
+				$query = "SELECT *  FROM local.device_indicator where object_id = $objectId";
+				$indicatorRecords = $link->query($query);
+			
+				if ( count( $indicatorRecords ) == 0 ) {
+					echo "Error in Getting Indicators";
+			        	return -1;
+				}
+
+					while ( $row = $indicatorRecords->fetchObject() ) {
+						$indId = $row->id;
+						$valcnt = 0;
+						for ( $count = 0; $count < 25; $count++ ) {
+							$shortTerm = $link->query("SELECT count(*) AS Count FROM pluginshortterm.shortterm$count WHERE indicator_id = $indId ");
+							$row = $shortTerm->fetchObject();
+							$valcnt += intval($row->Count);
+							$pluginCntForInd["$indId"] = $valcnt;
+						}
+
+						if ( $pluginCntForInd["$indId"] == 0 ) {
+							echo( "NO plugin in shortterm for $indId\n" );
+							return -1;
+						}
+						else {
+							$successFlag = 1;
+						}
+					}
+        		}
+	
+		}
+
+		if ($successFlag == 1 ) {
+			echo "Everything is perfect\n";
+		}
+		else {
+			echo "Xstats is broken\n";
+		}
+	}
+
+
+	function ramBackedTest ( $numFile ){
+
+			echo " In $argv[1] testing for xStats \n";
+			echo " Generating files \n ";
+			echo " Number of files $numFile \n";
+		 $PID = shell_exec( "/opt/genfile.sh RAMBACKED 100" );
+
+		 $table_name = array();
+
+		 //Get found_dvice_id for bulkdata_objects_found from buldata_devices_found->id
+		 
+		 sleep(30);
+		 
+		 $link = Database::connectLocal();
+		 $query = "SELECT id FROM net.deviceinfo;";
+		 $deviceRecords = $link->query( $query );
+		 
+		 if ( count( $deviceRecords ) == 0 ) {
+		 	echo "Error in Getting Devices";
+		  return -1;
+		 }
+		 
+
+		while ( $row = $deviceRecords->fetchObject() ) {
+			$deviceId = $row->id;
+			
+			sleep(30);
+		  $PID = shell_exec( "/opt/genfile.sh RAMBACKED $numFile" );
+			sleep(60);
+
+			$objectRecords = $link->query( "SELECT * FROM local.device_object WHERE device_id = $deviceId" );
+
+			if ( count( $objectRecords ) == 0 ) {
+	                	echo "Error in Getting Objects";
+	                	return -1;
+	        	}
+
+			$indCnt = 0;
+			while ( $row = $objectRecords->fetchObject() ) {
+                		$objectId = $row->id;
+				$table_name = $row->table_name;
+
+				$query = "SELECT *  FROM local.device_indicator where object_id = $objectId";
+				$indicatorRecords = $link->query($query);
+			
+				if ( count( $indicatorRecords ) == 0 ) {
+					echo "Error in Getting Indicators";
+			        	return -1;
+				}
+					while ( $row = $indicatorRecords->fetchObject() ) {
+						$indId = $row->id;
+						$indCnt = $indCnt +1;
+						$valcnt = 0;
+						for ( $count = 0; $count < 25; $count++ ) {
+							$shortTerm = $link->query( "SELECT count(*) AS Count FROM pluginshortterm.shortterm$count WHERE indicator_id = $indId ");
+							$row = $shortTerm->fetchObject();
+							$valcnt += intval($row->Count);
+						}
+
+						}
+					}
+
+					 $processedFileRecords = $link->query( "SELECT count(*) AS Count FROM local.bulkdata_processed_files WHERE dev_id = $deviceId ");
+			     $row = $processedFileRecords->fetchObject();
+			     $fileCnt = intval($row->Count);
+			     $totalVal = $fileCnt * $indCnt;         //total values in shorttermtable for all the indicators
+
+			     echo " Number of files processed : $fileCnt\n ";
+			     echo " Number of values in shortterm table : $valCnt\n ";
+			     echo " Number of indicators : $indCnt\n ";
+
+			     if( $totalVal == $valCnt ) { 
+			       echo "Everything is perfect\n";
+			     }   
+			     else {
+			       echo "Xstats is broken\n";
+			     }   
+
+     }
+	
+	}
+
+
+?>

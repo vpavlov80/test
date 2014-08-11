@@ -1,0 +1,29 @@
+{
+	"ObjectTypePath" : {
+		"name" : "",
+		"field_identifiers" : "",
+		"is_ignore" : ""
+		"indicators" : [
+		{
+			"indicator":"Indicator 1",
+			"description" : "",
+			"type": "",
+			"percentable" : "",
+			"units" : "",
+			"data_units" : "",
+			"is_default" : "",
+			"is_ignore" : ""
+		},
+		{
+			"indicator":"Indicator 2",
+			"description" : "",
+			"type": "",
+			"percentable" : "",
+			"units" : "",
+			"data_units" : "",
+			"is_default" : "",
+			"is_ignore" : ""
+		}
+		]
+	}
+}
